@@ -1,99 +1,93 @@
+require("dotenv").config();
 const express = require("express");
-const bodyParser = require("body-parser");
-const mongoose = require("mongoose");
-const passport = require("passport");
 const cors = require("cors");
+const mongoose = require("mongoose");
+const bodyParser = require("body-parser");
 const multer = require("multer");
 const jwt = require("jsonwebtoken");
+const passport = require("passport");
 
 const app = express();
-const port = 8000;
 
-// ✅ CORS MUST ALLOW YOUR EXPO IP
-app.use(
-  cors({
-    origin: "*",
-    methods: "GET,POST,PUT,DELETE",
-  })
-);
-
-app.use(bodyParser.urlencoded({ extended: false }));
+// ✅ Allow expo + mobile traffic
+app.use(cors({ origin: "*", methods: "GET,POST" }));
 app.use(bodyParser.json());
 app.use(passport.initialize());
 
 // ✅ Serve uploaded images
 app.use("/files", express.static("files"));
 
+const PORT = process.env.PORT || 8000;
+const MONGODB_URI = process.env.MONGODB_URI;
+const JWT_SECRET = process.env.JWT_SECRET;
+
+// ✅ Connect to MongoDB
 mongoose
-  .connect("mongodb+srv://Marshall:hayatudeen@cluster0.74zap7p.mongodb.net/", {
-    useNewUrlParser: true,
-    useUnifiedTopology: true,
-  })
-  .then(() => console.log("✅ Connected to MongoDB"))
+  .connect(MONGODB_URI)
+  .then(() => console.log("✅ MongoDB Connected"))
   .catch((err) => console.log("❌ MongoDB Error:", err));
 
-app.listen(port, "0.0.0.0", () => {
-  console.log(`✅ Server running at http://10.55.151.1:${port}`);
+app.listen(PORT, () => {
+  console.log(`✅ Server running on port ${PORT}`);
 });
 
 const User = require("./models/user");
 const Message = require("./models/message");
 
-// ✅ REGISTER USER
+// ✅ Registration
 app.post("/register", async (req, res) => {
-  const { name, email, password, image } = req.body;
-
   try {
+    const { name, email, password, image } = req.body;
+
     const newUser = new User({ name, email, password, image });
     await newUser.save();
-    res.status(200).json({ message: "User registered successfully" });
+
+    res.json({ message: "User registered successfully" });
   } catch (err) {
-    console.log("Error registering user", err);
-    res.status(500).json({ message: "Error registering user" });
+    console.log(err);
+    res.status(500).json({ message: "Registration failed" });
   }
 });
 
-// ✅ CREATE JWT TOKEN
+// ✅ Token Generator
 const createToken = (userId) => {
-  return jwt.sign({ userId }, "Q$r2K6W8n!jCW%Zk", { expiresIn: "1h" });
+  return jwt.sign({ userId }, JWT_SECRET, { expiresIn: "7d" });
 };
 
-// ✅ LOGIN USER
-app.post("/login", (req, res) => {
-  const { email, password } = req.body;
-
-  if (!email || !password)
-    return res.status(404).json({ message: "Email and password required" });
-
-  User.findOne({ email })
-    .then((user) => {
-      if (!user) return res.status(404).json({ message: "User not found" });
-      if (user.password !== password)
-        return res.status(404).json({ message: "Invalid Password!" });
-
-      const token = createToken(user._id);
-      res.status(200).json({ token });
-    })
-    .catch((error) => {
-      console.log("Login error:", error);
-      res.status(500).json({ message: "Internal Server Error" });
-    });
-});
-
-// ✅ GET ALL USERS EXCEPT LOGGED USER
-app.get("/users/:userId", (req, res) => {
-  User.find({ _id: { $ne: req.params.userId } })
-    .then((users) => res.status(200).json(users))
-    .catch((err) =>
-      res.status(500).json({ message: "Error retrieving users" })
-    );
-});
-
-// ✅ SEND FRIEND REQUEST
-app.post("/friend-request", async (req, res) => {
-  const { currentUserId, selectedUserId } = req.body;
-
+// ✅ Login
+app.post("/login", async (req, res) => {
   try {
+    const { email, password } = req.body;
+
+    const user = await User.findOne({ email });
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    if (user.password !== password)
+      return res.status(400).json({ message: "Invalid password" });
+
+    const token = createToken(user._id);
+    res.json({ token });
+  } catch (err) {
+    console.log(err);
+    res.status(500).json({ message: "Login failed" });
+  }
+});
+
+// ✅ Get all users except self
+app.get("/users/:userId", async (req, res) => {
+  try {
+    const users = await User.find({ _id: { $ne: req.params.userId } });
+    res.json(users);
+  } catch (err) {
+    res.status(500).json({ message: "Error retrieving users" });
+  }
+});
+
+// ✅ Send friend request
+app.post("/friend-request", async (req, res) => {
+  try {
+    const { currentUserId, selectedUserId } = req.body;
+
     await User.findByIdAndUpdate(selectedUserId, {
       $push: { freindRequests: currentUserId },
     });
@@ -103,36 +97,37 @@ app.post("/friend-request", async (req, res) => {
     });
 
     res.sendStatus(200);
-  } catch (error) {
+  } catch (err) {
     res.sendStatus(500);
   }
 });
 
-// ✅ GET RECEIVED FRIEND REQUESTS
+// ✅ Get received friend requests
 app.get("/friend-request/:userId", async (req, res) => {
   try {
-    const user = await User.findById(req.params.userId)
-      .populate("freindRequests", "name email image")
-      .lean();
+    const user = await User.findById(req.params.userId).populate(
+      "freindRequests",
+      "name email image"
+    );
 
     res.json(user.freindRequests);
-  } catch (error) {
-    res.status(500).json({ message: "Error fetching friend requests" });
+  } catch (err) {
+    res.status(500).json({ message: "Server error" });
   }
 });
 
-// ✅ ACCEPT FRIEND REQUEST
+// ✅ Accept friend request
 app.post("/friend-request/accept", async (req, res) => {
-  const { senderId, recepientId } = req.body;
-
   try {
+    const { senderId, recepientId } = req.body;
+
     const sender = await User.findById(senderId);
-    const recepient = await User.findById(recepientId);
+    const receiver = await User.findById(recepientId);
 
     sender.friends.push(recepientId);
-    recepient.friends.push(senderId);
+    receiver.friends.push(senderId);
 
-    recepient.freindRequests = recepient.freindRequests.filter(
+    receiver.freindRequests = receiver.freindRequests.filter(
       (id) => id.toString() !== senderId.toString()
     );
 
@@ -141,44 +136,39 @@ app.post("/friend-request/accept", async (req, res) => {
     );
 
     await sender.save();
-    await recepient.save();
+    await receiver.save();
 
-    res.status(200).json({ message: "Friend Request accepted" });
-  } catch (error) {
-    res.status(500).json({ message: "Error accepting friend request" });
+    res.json({ message: "Friend request accepted" });
+  } catch (err) {
+    res.status(500).json({ message: "Server error" });
   }
 });
 
-// ✅ GET FRIENDS LIST
+// ✅ Get accepted friends
 app.get("/accepted-friends/:userId", async (req, res) => {
   try {
     const user = await User.findById(req.params.userId).populate(
       "friends",
       "name email image"
     );
+
     res.json(user.friends);
-  } catch (error) {
-    res.status(500).json({ error: "Error fetching friends" });
+  } catch (err) {
+    res.status(500).json({ message: "Error loading friends" });
   }
 });
 
-// ✅ MULTER UPLOAD (image messages)
+// ✅ File Upload (Messages)
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, "files/"),
-  filename: (req, file, cb) =>
-    cb(
-      null,
-      Date.now() +
-        "-" +
-        Math.round(Math.random() * 1e9) +
-        "-" +
-        file.originalname
-    ),
+  filename: (req, file, cb) => {
+    const unique = Date.now() + "-" + Math.round(Math.random() * 1e9);
+    cb(null, unique + "-" + file.originalname);
+  },
 });
-
 const upload = multer({ storage });
 
-// ✅ SEND MESSAGE (text/image)
+// ✅ Send message
 app.post("/messages", upload.single("imageFile"), async (req, res) => {
   try {
     const { senderId, recepientId, messageType, messageText } = req.body;
@@ -188,18 +178,18 @@ app.post("/messages", upload.single("imageFile"), async (req, res) => {
       recepientId,
       messageType,
       message: messageText,
-      timeStamp: new Date(),
+      timestamp: new Date(),
       imageUrl: messageType === "image" ? req.file.path : null,
     });
 
     await newMessage.save();
-    res.status(200).json({ message: "Message sent" });
-  } catch (error) {
-    res.status(500).json({ error: "Message sending failed" });
+    res.json({ message: "Message sent" });
+  } catch (err) {
+    res.status(500).json({ message: "Error sending message" });
   }
 });
 
-// ✅ GET CHAT MESSAGES
+// ✅ Get messages between two users
 app.get("/messages/:senderId/:recepientId", async (req, res) => {
   try {
     const messages = await Message.find({
@@ -210,41 +200,23 @@ app.get("/messages/:senderId/:recepientId", async (req, res) => {
     }).populate("senderId", "_id name");
 
     res.json(messages);
-  } catch (error) {
-    res.status(500).json({ error: "Error fetching messages" });
+  } catch (err) {
+    res.status(500).json({ message: "Error fetching messages" });
   }
 });
 
-// ✅ DELETE MESSAGES
+// ✅ Delete messages
 app.post("/deleteMessages", async (req, res) => {
   try {
-    const { messages } = req.body;
-    await Message.deleteMany({ _id: { $in: messages } });
-    res.json({ message: "Messages deleted" });
-  } catch (error) {
-    res.status(500).json({ error: "Error deleting messages" });
+    await Message.deleteMany({ _id: { $in: req.body.messages } });
+    res.json({ message: "Deleted" });
+  } catch (err) {
+    res.status(500).json({ message: "Error deleting" });
   }
 });
 
-// ✅ GET SENT REQUESTS
-app.get("/friend-requests/sent/:userId", async (req, res) => {
-  try {
-    const user = await User.findById(req.params.userId)
-      .populate("sentFriendRequests", "name email image")
-      .lean();
-
-    res.json(user.sentFriendRequests);
-  } catch (error) {
-    res.status(500).json({ error: "Error fetching sent requests" });
-  }
-});
-
-// ✅ GET FRIEND IDS
-app.get("/friends/:userId", async (req, res) => {
-  try {
-    const user = await User.findById(req.params.userId).populate("friends");
-    res.json(user.friends.map((f) => f._id));
-  } catch (error) {
-    res.status(500).json({ message: "Error fetching friends" });
-  }
+// ✅ Get user profile
+app.get("/user/:userId", async (req, res) => {
+  const user = await User.findById(req.params.userId);
+  res.json(user);
 });
